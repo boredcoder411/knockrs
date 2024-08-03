@@ -21,7 +21,7 @@ async fn main() {
 
     // Define the warp filter
     let domain_map_filter = warp::any().map(move || domain_map.clone());
-    let hi = warp::path::end()
+    let hi = warp::path::full()
         .and(warp::header("user-agent"))
         .and(warp::header("host"))
         .and(domain_map_filter)
@@ -35,16 +35,16 @@ async fn main() {
 
 // The request handler
 async fn handle_request(
+    path: warp::path::FullPath,
     agent: String,
     host: String,
     domain_map: HashMap<String, String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    // Extract the host part from the header
     let host = host.split(":").collect::<Vec<&str>>()[0].to_string();
-    println!("agent: {}, host: {}", agent, host);
+    println!("Path: {}, agent: {}, host: {}", path.as_str(), agent, host);
 
     // Get the forwarding address from the domain map
-    if let Some(forward_address) = format!("http://localhost:{}", domain_map.get(&host).unwrap_or(&"".to_string())).parse::<String>().ok() {
+    if let Some(forward_address) = format!("http://localhost:{}{}", domain_map.get(&host).unwrap_or(&"".to_string()), path.as_str()).parse::<String>().ok() {
         // Forward the request and return the response
         match forward_request(&forward_address).await {
             Ok(response_body) => Ok(warp::reply::Response::new(response_body.into())),
