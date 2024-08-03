@@ -1,0 +1,7 @@
+{
+    "port": 3030,
+    "domain_map": {
+        "localhost": "3030",
+        "test.localhost": "3500"
+    }
+}
