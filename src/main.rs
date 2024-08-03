@@ -1,9 +1,9 @@
-use warp::{Filter, Reply};
-use std::{collections::HashMap, str::FromStr};
+use warp::Filter;
+use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json;
 use std::fs;
-use reqwest::Client;
+use reqwest;
 
 #[derive(Deserialize)]
 struct ConfigData {
@@ -13,44 +13,63 @@ struct ConfigData {
 
 #[tokio::main]
 async fn main() {
+    // Read the configuration file
     let config = fs::read_to_string("config.json").expect("Unable to read file");
-    let config_deser = serde_json::from_str::<ConfigData>(&config).expect("Unable to deserialize");
+    let config_deser: ConfigData = serde_json::from_str(&config).expect("Unable to deserialize");
     let port = config_deser.port;
-    let domain_map = config_deser.domain_map;
+    let domain_map = config_deser.domain_map.clone();
 
-    // Move domain_map inside the filter to avoid ownership issues
+    // Define the warp filter
     let domain_map_filter = warp::any().map(move || domain_map.clone());
-
-    let hi = warp::path("hello")
-        .and(warp::path::param())
+    let hi = warp::path::end()
         .and(warp::header("user-agent"))
         .and(warp::header("host"))
         .and(domain_map_filter)
-        .and_then(
-            |param: String, agent: String, host: String, domain_map: HashMap<String, String>| async move {
-                println!("param: {}, agent: {}, host: {}", param, agent, host);
-                let host = host.split(":").collect::<Vec<&str>>()[0].to_string();
-                if let Some(target) = domain_map.get(&host) {
-                    // forward request
-                    let client = Client::new();
-                    let url = format!("http://{}/{}", target, param);
-                    let request = client.get(&url).header("User-Agent", agent.clone()).build().unwrap();
-                    match client.execute(request).await {
-                        Ok(response) => {
-                            let status = response.status();
-                            let status_str = status.as_str();
-                            let body = response.text().await.unwrap_or_else(|_| "Error".into());
-                            Ok::<_, warp::Rejection>(warp::reply::with_status(body, warp::http::StatusCode::from_str(status_str).unwrap()).into_response())
-                        },
-                        Err(_) => Ok(warp::reply::with_status::<&'static str>("Error".into(), warp::http::StatusCode::INTERNAL_SERVER_ERROR).into_response()),
-                    }
-                } else {
-                    Ok(warp::reply::with_status(warp::reply::html("Not Found"), warp::http::StatusCode::NOT_FOUND).into_response())
-                }
-            }
-        );
+        .and_then(handle_request);
 
+    // Run the warp server
     warp::serve(hi)
         .run(([127, 0, 0, 1], port))
         .await;
+}
+
+// The request handler
+async fn handle_request(
+    agent: String,
+    host: String,
+    domain_map: HashMap<String, String>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    // Extract the host part from the header
+    let host = host.split(":").collect::<Vec<&str>>()[0].to_string();
+    println!("agent: {}, host: {}", agent, host);
+
+    // Get the forwarding address from the domain map
+    if let Some(forward_address) = format!("http://localhost:{}", domain_map.get(&host).unwrap_or(&"".to_string())).parse::<String>().ok() {
+        // Forward the request and return the response
+        match forward_request(&forward_address).await {
+            Ok(response_body) => Ok(warp::reply::Response::new(response_body.into())),
+            Err(err) => {
+                eprintln!("Error forwarding request: {:?}", err);
+                Ok(warp::reply::Response::new("Failed to forward request".into()))
+            }
+        }
+    } else {
+        // Return an error response if no domain is found
+        Ok(warp::reply::Response::new("No domain found".into()))
+    }
+}
+
+// The function to forward requests
+async fn forward_request(forward_address: &str) -> Result<String, reqwest::Error> {
+    // Create a new reqwest client
+    let client = reqwest::Client::new();
+
+    // Make a GET request to the forwarding address
+    let response = client.get(forward_address).send().await?;
+
+    // Read the response body as a string
+    let body = response.text().await?;
+
+    // Return the response body
+    Ok(body)
 }
