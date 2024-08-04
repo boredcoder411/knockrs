@@ -7,4 +7,3 @@ In config.json, add the port you would like knockrs to run on, and a dictionary 
 cargo run
 ```
 To run the project
-## Note: paths don't work, imma fix that
