@@ -1,94 +1,69 @@
-use warp::Filter;
-use std::collections::HashMap;
-use serde::Deserialize;
-use serde_json;
-use std::fs;
-use reqwest;
+use axum::{
+    body::Body,
+    extract::Request,
+    http::Method,
+    routing::get,
+    Router,
+};
 
-#[derive(Deserialize, Debug)]
-struct ConfigData {
-    port: u16,
-    domain_map: HashMap<String, String>,
-}
+use hyper::{body::Incoming, server::conn::http1};
+use std::net::SocketAddr;
+use tokio::net::{TcpListener};
+use tower::{Service, ServiceExt};
+use hyper_util::rt::TokioIo;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use knockrs::proxy_util::proxy;
 
 #[tokio::main]
 async fn main() {
-    // Read the configuration file
-    println!("Reading configuration file...");
-    let config = fs::read_to_string("config.json").expect("Unable to read file");
-    println!("Config file content: {}", config);
-    let config_deser: ConfigData = serde_json::from_str(&config).expect("Unable to deserialize");
-    println!("Deserialized config: {:?}", config_deser);
-    let port = config_deser.port;
-    let domain_map = config_deser.domain_map.clone();
-    println!("Port: {}, Domain map: {:?}", port, domain_map);
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                format!("{}=trace,tower_http=debug", env!("CARGO_CRATE_NAME")).into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
-    // Define the warp filter
-    println!("Defining warp filter...");
-    let domain_map_filter = warp::any().map(move || domain_map.clone());
-    let hi = warp::path::full()
-        .and(warp::header("user-agent"))
-        .and(warp::header("host"))
-        .and(domain_map_filter)
-        .and_then(handle_request);
+    let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    // Run the warp server
-    println!("Starting warp server on port {}...", port);
-    warp::serve(hi)
-        .run(([127, 0, 0, 1], port))
-        .await;
-}
-
-// The request handler
-async fn handle_request(
-    path: warp::path::FullPath,
-    agent: String,
-    host: String,
-    domain_map: HashMap<String, String>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    println!("Received request - Path: {}, Agent: {}, Host: {}", path.as_str(), agent, host);
-    let host = host.split(":").collect::<Vec<&str>>()[0].to_string();
-    println!("Processed host: {}", host);
-
-    // Get the forwarding address from the domain map
-    if let Some(forward_address) = domain_map.get(&host) {
-        let full_forward_address = format!("http://localhost:{}{}", forward_address, path.as_str());
-        println!("Forwarding address: {}", full_forward_address);
-        
-        // Forward the request and return the response
-        match forward_request(&full_forward_address).await {
-            Ok(response_body) => {
-                println!("Forward request successful, response body: {}", response_body);
-                Ok(warp::reply::Response::new(response_body.into()))
-            },
-            Err(err) => {
-                eprintln!("Error forwarding request: {:?}", err);
-                Ok(warp::reply::Response::new("Failed to forward request".into()))
+    let tower_service = tower::service_fn(move |req: Request<_>| {
+        let router_svc = router_svc.clone();
+        let req = req.map(Body::new);
+        async move {
+            if req.method() == Method::CONNECT {
+                proxy(req).await
+            } else {
+                router_svc.oneshot(req).await.map_err(|err| match err {})
             }
         }
-    } else {
-        // Return an error response if no domain is found
-        println!("No domain found for host: {}", host);
-        Ok(warp::reply::Response::new("No domain found".into()))
+    });
+
+    let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
+        tower_service.clone().call(request)
+    });
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    tracing::debug!("listening on {}", addr);
+
+    let listener = TcpListener::bind(addr).await.unwrap();
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let io = TokioIo::new(stream);
+        let hyper_service = hyper_service.clone();
+        
+        tokio::task::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .serve_connection(io, hyper_service)
+                .with_upgrades()
+                .await
+            {
+                println!("Failed to serve connection: {:?}", err);
+            }
+        });
     }
-}
-
-// The function to forward requests
-async fn forward_request(forward_address: &str) -> Result<String, reqwest::Error> {
-    println!("Forwarding request to address: {}", forward_address);
-
-    // Create a new reqwest client
-    let client = reqwest::Client::new();
-
-    // Make a GET request to the forwarding address
-    let response = client.get(forward_address).send().await?;
-    println!("Received response with status: {}", response.status());
-
-    // Read the response body as a string
-    let body = response.text().await?;
-    println!("Response body: {}", body);
-
-    // Return the response body
-    Ok(body)
 }
 

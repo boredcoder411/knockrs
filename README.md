@@ -1,9 +1,9 @@
 # Knockrs
-Knockrs (pronounced knockers) is a reverse proxy written in rust using warp and tokio
+Knockrs (pronounced knockers) is a reverse proxy written. Thats it. It does not do anything else.
 
-## Usage
-In config.json, add the port you would like knockrs to run on, and a dictionary containing domain names and the corresponding ports you would like to map them to. Check config.json for an example. Then use
-```bash
-cargo run
-```
-To run the project
+## Features
+- [x] http proxy
+- [ ] https support
+- [ ] load balancing
+- [ ] rate limiting
+- [ ] lua scripting

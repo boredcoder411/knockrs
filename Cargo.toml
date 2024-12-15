@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reqwest = "0.12.5"
-serde = { version = "1.0.204", features = ["derive"] }
-serde_json = "1.0.122"
-tokio = { version = "1.39.2", features = ["full"] }
-warp = "0.3.7"
+axum = "0.7.9"
+hyper = "1.5.1"
+hyper-util = "0.1.10"
+tokio = { version = "1.42.0", features = ["full"] }
+tower = "0.5.2"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
